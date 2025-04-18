@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <script src="https://unpkg.com/@tonconnect/sdk@latest/dist/tonconnect-sdk.min.js" defer></script>
+    <script src="https://unpkg.com/tonweb@0.0.60/dist/tonweb.js"></script>
+    <style>
+      body {
+        width: 100%;
+        max-width: 800px;
+        margin: 0 auto;
+        font-family: 'Roboto', sans-serif;
+        background-color: #f5f5f5;
+        padding: 20px;
+      }
+      .section {
+        background: white;
+        padding: 30px;
+        margin: 20px auto;
+        border-radius: 16px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+        text-align: center;
+      }
+      .welcome-screen h1 {
+        color: #232328;
+        font-size: 32px;
+        margin-bottom: 30px;
+      }
+      .connect-btn {
+        background-color: #0088CC;
+        color: white;
+        border: none;
+        padding: 15px 40px;
+        font-size: 18px;
+        border-radius: 12px;
+        cursor: pointer;
+        transition: background-color 0.3s;
+      }
+      .connect-btn:hover {
+        background-color: #006699;
+      }
+      .wallet-btn {
+        width: 100%;
+        padding: 15px;
+        margin: 10px 0;
+        border: 2px solid #eee;
+        border-radius: 12px;
+        background: white;
+        font-size: 16px;
+        cursor: pointer;
+        transition: all 0.3s;
+      }
+      .wallet-btn:hover {
+        border-color: #0088CC;
+        background: #f8f9fa;
+      }
+      .wallet-btn.featured {
+        border-color: #0088CC;
+        background: #e8f5ff;
+      }
+      .screen {
+        display: none;
+      }
+      .screen.active {
+        display: block;
+      }
+      .connected-info {
+        font-size: 18px;
+        color: #232328;
+      }
+      .contract-info {
+        margin-top: 20px;
+        padding: 15px;
+        background: #f8f9fa;
+        border-radius: 8px;
+        text-align: left;
+      }
+      .contract-info a {
+        color: #0088CC;
+        text-decoration: none;
+      }
+      .contract-info a:hover {
+        text-decoration: underline;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="section screen welcome-screen active" id="welcome">
+      <h1>Добро пожаловать в GiftCoin</h1>
+      <button class="connect-btn" id="initial-connect">Подключить кошелек</button>
+    </div>
+
+    <div class="section screen" id="wallets">
+      <h2>Выберите кошелек</h2>
+      <div id="tonconnect-buttons"></div>
+    </div>
+
+    <div class="section screen" id="connected">
+      <h2>Кошелек подключен</h2>
+      <p class="network-status">Сеть: <span id="network-label"></span></p>
+      <p class="connected-info" id="wallet-info"></p>
+      <div class="contract-info" id="contract-info"></div>
+      <button class="connect-btn" id="disconnect-btn">Отключить кошелек</button>
+    </div>
+    
+    <script>
+      const $ = document.querySelector.bind(document);
+      const NETWORKS = {
+        mainnet: {
+          endpoint: 'https://toncenter.com/api/v2/jsonRPC',
+          explorer: 'https://tonviewer.com',
+          apiKey: 'YOUR_API_KEY_HERE' // Get from https://toncenter.com/
+        },
+        testnet: {
+          endpoint: 'https://testnet.toncenter.com/api/v2/jsonRPC',
+          explorer: 'https://testnet.tonviewer.com',
+          apiKey: '21e908875efb57e1de6c30b40e4d7daa9903de42a40c8d5e320f628e530d97be' // Get from https://toncenter.com/
+        }
+      };
+      let currentNetwork = 'mainnet';
+      let lastRequestTime = 0;
+      const REQUEST_DELAY = 1000; // 1 second between requests
+
+      async function waitForNextRequest() {
+        const now = Date.now();
+        const timeSinceLastRequest = now - lastRequestTime;
+        if (timeSinceLastRequest < REQUEST_DELAY) {
+          await delay(REQUEST_DELAY - timeSinceLastRequest);
+        }
+        lastRequestTime = Date.now();
+      }
+
+      const CONTRACT_ADDRESS = 'kQDD11wtqE2fr9h6DCfcsAHXszLwnKmOR9JeQEhKtQMAOpjs';
+      
+      function formatTonAddress(address) {
+        if (!address) return 'Адрес не найден';
+        return address;
+      }
+
+      function showScreen(screenId) {
+        document.querySelectorAll('.screen').forEach(screen => screen.classList.remove('active'));
+        $(`#${screenId}`).classList.add('active');
+      }
+
+      async function getContractData() {
+        try {
+          await waitForNextRequest();
+          const network = NETWORKS[currentNetwork];
+          const tonweb = new TonWeb(new TonWeb.HttpProvider(
+            network.endpoint, 
+            { apiKey: network.apiKey }
+          ));
+          const address = new TonWeb.utils.Address(CONTRACT_ADDRESS);
+          
+          const contractState = await tonweb.provider.getAddressInfo(address.toString());
+          if (contractState.state !== 'active') {
+            throw new Error(`Contract is not active on ${currentNetwork}`);
+          }
+
+          const [walletAddressResult, rateResult] = await Promise.all([
+            tonweb.provider.call2(address.toString(), 'contract_jetton_wallet_address'),
+            tonweb.provider.call2(address.toString(), 'rate')
+          ]);
+
+          return {
+            walletAddress: walletAddressResult ? TonWeb.utils.bytesToHex(walletAddressResult) : null,
+            rate: rateResult ? Number(TonWeb.utils.bytesToHex(rateResult)) / 1e9 : null
+          };
+        } catch (e) {
+          console.error('Contract data fetch error:', e);
+          return {
+            walletAddress: null,
+            rate: null,
+            error: e.message
+          };
+        }
+      }
+
+      function updateContractInfo(data) {
+        const network = NETWORKS[currentNetwork];
+        $('#contract-info').innerHTML = `
+          <h3>Информация о контракте (${currentNetwork}):</h3>
+          <p>Адрес контракта: <a href="${network.explorer}/${CONTRACT_ADDRESS}" target="_blank">${CONTRACT_ADDRESS}</a></p>
+          ${data.error 
+            ? `<p class="error">Ошибка: ${data.error}</p>`
+            : `
+              <p>Адрес кошелька контракта: ${data.walletAddress || 'Не удалось получить'}</p>
+              <p>Текущий курс: ${data.rate !== null ? data.rate + ' TON' : 'Не удалось получить'}</p>
+            `
+          }
+        `;
+      }
+
+      function detectNetwork(walletInfo) {
+        console.log('Wallet info for network detection:', walletInfo);
+        // First check testnet flag, then chain ID, then workchain
+        if (walletInfo.account.testnet || 
+            walletInfo.device.features.includes('testnet') ||
+            walletInfo.account.chain === '-3' ||
+            walletInfo.account.chain === -3) {
+          return 'testnet';
+        }
+        return 'mainnet';
+      }
+
+      window.onload = async () => {
+        const connector = new TonConnectSDK.TonConnect();
+        let isConnecting = false;
+        let isConnected = false;
+
+        async function delay(ms) {
+          return new Promise(resolve => setTimeout(resolve, ms));
+        }
+
+        async function safeConnect(connectFn) {
+          if (isConnecting) return;
+          isConnecting = true;
+          
+          try {
+            if (isConnected) {
+              await connector.disconnect();
+              await delay(1000);
+              isConnected = false;
+            }
+            await connectFn();
+          } catch (e) {
+            console.error('Connection error:', e);
+          } finally {
+            isConnecting = false;
+          }
+        }
+
+        const walletsList = await connector.getWallets();
+
+        connector.onStatusChange(async walletInfo => {
+          isConnected = !!(walletInfo && walletInfo.account);
+          if (isConnected) {
+            currentNetwork = detectNetwork(walletInfo);
+            $('#network-label').textContent = currentNetwork === 'mainnet' ? 'Основная' : 'Тестовая';
+            const network = NETWORKS[currentNetwork];
+            $('#wallet-info').innerHTML = `Адрес кошелька: <a href="${network.explorer}/${walletInfo.account.address}" target="_blank">${formatTonAddress(walletInfo.account.address)}</a>`;
+            showScreen('connected');
+            const contractData = await getContractData();
+            updateContractInfo(contractData);
+          } else {
+            $('#wallet-info').textContent = 'Ожидание подключения...';
+            $('#contract-info').innerHTML = '';
+          }
+        });
+
+        const restoredConnection = await connector.restoreConnection();
+        if (restoredConnection) {
+          isConnected = true;
+          currentNetwork = detectNetwork(restoredConnection);
+          $('#network-label').textContent = currentNetwork === 'mainnet' ? 'Основная' : 'Тестовая';
+          const network = NETWORKS[currentNetwork];
+          $('#wallet-info').innerHTML = `Адрес кошелька: <a href="${network.explorer}/${restoredConnection.account.address}" target="_blank">${formatTonAddress(restoredConnection.account.address)}</a>`;
+          showScreen('connected');
+          const contractData = await getContractData();
+          updateContractInfo(contractData);
+        }
+        
+        $('#initial-connect').onclick = () => showScreen('wallets');
+        
+        $('#disconnect-btn').onclick = async () => {
+          if (!isConnected) return;
+          try {
+            await connector.disconnect();
+            isConnected = false;
+            showScreen('welcome');
+          } catch (e) {
+            console.error('Disconnect error:', e);
+          }
+        };
+
+        let buttonsContainer = $('#tonconnect-buttons');
+        
+        for (let wallet of walletsList) {
+          let connectButton = document.createElement('button');
+          connectButton.className = 'wallet-btn';
+          connectButton.innerText = wallet.name;
+          
+          if (wallet.embedded) {
+            connectButton.classList.add('featured');
+          }
+          
+          if (wallet.embedded || wallet.injected) {
+            connectButton.onclick = () => {
+              connectButton.disabled = true;
+              safeConnect(async () => {
+                await connector.connect({jsBridgeKey: wallet.jsBridgeKey});
+              }).finally(() => {
+                connectButton.disabled = false;
+              });
+            };
+          } else if (wallet.bridgeUrl) {
+            connectButton.onclick = () => {
+              connectButton.disabled = true;
+              safeConnect(async () => {
+                await connector.connect({
+                  universalLink: wallet.universalLink,
+                  bridgeUrl: wallet.bridgeUrl
+                });
+              }).finally(() => {
+                connectButton.disabled = false;
+              });
+            };
+          } else {
+            connectButton.disabled = true;
+          }
+          
+          buttonsContainer.appendChild(connectButton);
+        }
+      };
+    </script>
+  </body>
+</html>
