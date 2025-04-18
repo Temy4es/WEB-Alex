@@ -2,7 +2,8 @@
 <html>
   <head>
     <meta charset="utf-8">
-    <script src="https://unpkg.com/@tonconnect/sdk@latest/dist/tonconnect-sdk.min.js" defer></script>
+    <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/dist/qrcode.min.js"></script>
+    <script src="https://unpkg.com/@tonconnect/sdk@latest/dist/tonconnect-sdk.min.js"></script>
     <script src="https://unpkg.com/tonweb@0.0.60/dist/tonweb.js"></script>
     <style>
       body {
@@ -40,6 +41,9 @@
         background-color: #006699;
       }
       .wallet-btn {
+        display: flex;
+        align-items: center;
+        gap: 10px;
         width: 100%;
         padding: 15px;
         margin: 10px 0;
@@ -57,6 +61,11 @@
       .wallet-btn.featured {
         border-color: #0088CC;
         background: #e8f5ff;
+      }
+      .wallet-icon {
+        width: 32px;
+        height: 32px;
+        border-radius: 8px;
       }
       .screen {
         display: none;
@@ -82,6 +91,24 @@
       .contract-info a:hover {
         text-decoration: underline;
       }
+      .qr-container {
+        display: none;
+        position: fixed;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        background: white;
+        padding: 30px;
+        border-radius: 16px;
+        box-shadow: 0 4px 24px rgba(0,0,0,0.2);
+        text-align: center;
+        z-index: 1000;
+      }
+      .qr-link {
+        margin-top: 15px;
+        word-break: break-all;
+        font-size: 14px;
+      }
     </style>
   </head>
   <body>
@@ -101,6 +128,13 @@
       <p class="connected-info" id="wallet-info"></p>
       <div class="contract-info" id="contract-info"></div>
       <button class="connect-btn" id="disconnect-btn">Отключить кошелек</button>
+    </div>
+
+    <div class="qr-container" id="qr-modal">
+      <div class="qr-close" onclick="document.getElementById('qr-modal').classList.remove('active')">✕</div>
+      <h3>Отсканируйте QR-код</h3>
+      <canvas id="qr-canvas"></canvas>
+      <div class="qr-link" id="qr-link"></div>
     </div>
     
     <script>
@@ -135,6 +169,21 @@
       function formatTonAddress(address) {
         if (!address) return 'Адрес не найден';
         return address;
+      }
+
+      async function getWalletBalance(address) {
+        try {
+          const network = NETWORKS[currentNetwork];
+          const tonweb = new TonWeb(new TonWeb.HttpProvider(
+            network.endpoint, 
+            { apiKey: network.apiKey }
+          ));
+          const balance = await tonweb.provider.getBalance(address);
+          return Number(balance) / 1e9;
+        } catch (e) {
+          console.error('Balance fetch error:', e);
+          return null;
+        }
       }
 
       function showScreen(screenId) {
@@ -203,6 +252,42 @@
         return 'mainnet';
       }
 
+      async function showQR(url) {
+        const modal = $('#qr-modal');
+        const canvas = $('#qr-canvas');
+        $('#qr-link').innerHTML = `<a href="${url}" target="_blank">Открыть ссылку</a>`;
+        
+        // Wait for QRCode library to load
+        if (typeof QRCode === 'undefined') {
+          await new Promise((resolve) => {
+            const script = document.createElement('script');
+            script.src = 'https://cdn.jsdelivr.net/npm/qrcode@1.5.3/dist/qrcode.min.js';
+            script.onload = resolve;
+            document.head.appendChild(script);
+          });
+        }
+
+        try {
+          const qr = await new Promise((resolve, reject) => {
+            QRCode.toCanvas(canvas, url, {
+              width: 256,
+              margin: 1,
+              color: {
+                dark: '#000000',
+                light: '#ffffff'
+              }
+            }, (error, canvas) => {
+              if (error) reject(error);
+              resolve(canvas);
+            });
+          });
+          modal.classList.add('active');
+        } catch (error) {
+          console.error('QR code error:', error);
+          window.open(url, '_blank');
+        }
+      }
+
       window.onload = async () => {
         const connector = new TonConnectSDK.TonConnect();
         let isConnecting = false;
@@ -238,7 +323,12 @@
             currentNetwork = detectNetwork(walletInfo);
             $('#network-label').textContent = currentNetwork === 'mainnet' ? 'Основная' : 'Тестовая';
             const network = NETWORKS[currentNetwork];
-            $('#wallet-info').innerHTML = `Адрес кошелька: <a href="${network.explorer}/${walletInfo.account.address}" target="_blank">${formatTonAddress(walletInfo.account.address)}</a>`;
+            const balance = await getWalletBalance(walletInfo.account.address);
+            const balanceText = balance !== null ? `${balance.toFixed(4)} TON` : 'не удалось получить';
+            $('#wallet-info').innerHTML = `
+              Адрес кошелька: <a href="${network.explorer}/${walletInfo.account.address}" target="_blank">${formatTonAddress(walletInfo.account.address)}</a><br>
+              Баланс: ${balanceText}
+            `;
             showScreen('connected');
             const contractData = await getContractData();
             updateContractInfo(contractData);
@@ -254,7 +344,12 @@
           currentNetwork = detectNetwork(restoredConnection);
           $('#network-label').textContent = currentNetwork === 'mainnet' ? 'Основная' : 'Тестовая';
           const network = NETWORKS[currentNetwork];
-          $('#wallet-info').innerHTML = `Адрес кошелька: <a href="${network.explorer}/${restoredConnection.account.address}" target="_blank">${formatTonAddress(restoredConnection.account.address)}</a>`;
+          const balance = await getWalletBalance(restoredConnection.account.address);
+          const balanceText = balance !== null ? `${balance.toFixed(4)} TON` : 'не удалось получить';
+          $('#wallet-info').innerHTML = `
+            Адрес кошелька: <a href="${network.explorer}/${restoredConnection.account.address}" target="_blank">${formatTonAddress(restoredConnection.account.address)}</a><br>
+            Баланс: ${balanceText}
+          `;
           showScreen('connected');
           const contractData = await getContractData();
           updateContractInfo(contractData);
@@ -278,7 +373,18 @@
         for (let wallet of walletsList) {
           let connectButton = document.createElement('button');
           connectButton.className = 'wallet-btn';
-          connectButton.innerText = wallet.name;
+          
+          // Add wallet icon
+          const icon = document.createElement('img');
+          icon.src = wallet.imageUrl;
+          icon.className = 'wallet-icon';
+          icon.alt = wallet.name;
+          connectButton.appendChild(icon);
+          
+          // Add wallet name
+          const name = document.createElement('span');
+          name.innerText = wallet.name;
+          connectButton.appendChild(name);
           
           if (wallet.embedded) {
             connectButton.classList.add('featured');
@@ -295,15 +401,11 @@
             };
           } else if (wallet.bridgeUrl) {
             connectButton.onclick = () => {
-              connectButton.disabled = true;
-              safeConnect(async () => {
-                await connector.connect({
-                  universalLink: wallet.universalLink,
-                  bridgeUrl: wallet.bridgeUrl
-                });
-              }).finally(() => {
-                connectButton.disabled = false;
+              const universal = connector.connect({
+                universalLink: wallet.universalLink,
+                bridgeUrl: wallet.bridgeUrl
               });
+              showQR(universal.universalLink);
             };
           } else {
             connectButton.disabled = true;
